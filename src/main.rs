@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use std::io::{BufReader, Read};
 use serde::ser::SerializeStruct;
 use sha2::{Sha256, Digest};
+use std::fs;
 
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL;
@@ -15,16 +16,19 @@ const CHUNK_SIZE: usize = 1024 * 1024; // 1MB chunks
 #[command(author, version, about, long_about = None)]
 struct Args {
     tx_id: String,
+
+    #[arg(short, long, default_value = "bundle.json")]
+    output: std::path::PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Bundle {
     item_count: u32,
     entries: Vec<BundleEntry>,
     items: Vec<DataItem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct BundleEntry {
     size: u32,
     id: [u8; 32],
@@ -39,6 +43,8 @@ struct DataItem {
     anchor: Option<[u8; 32]>,
     tags: Vec<Tag>,
     data: Vec<u8>,
+    // Add field for nested bundle
+    nested_bundle: Option<Box<Bundle>>,
 }
 
 impl Serialize for DataItem {
@@ -48,33 +54,31 @@ impl Serialize for DataItem {
     {
         let mut state = serializer.serialize_struct("DataItem", 7)?;
 
-        // id is calculated from signature
         let id = self.calculate_id();
         state.serialize_field("id", &BASE64_URL.encode(id))?;
         
-        // Base64URL encode binary fields
         state.serialize_field("signature", &BASE64_URL.encode(&self.signature))?;
         state.serialize_field("owner", &BASE64_URL.encode(&self.owner))?;
         
-        // Handle optional target
         if let Some(target) = &self.target {
             state.serialize_field("target", &BASE64_URL.encode(target))?;
         } else {
             state.serialize_field("target", "")?;
         }
 
-        // Handle optional anchor
         if let Some(anchor) = &self.anchor {
             state.serialize_field("anchor", &BASE64_URL.encode(anchor))?;
         } else {
             state.serialize_field("anchor", "")?;
         }
         
-        // Tags are already handled by Tag's Serialize implementation
         state.serialize_field("tags", &self.tags)?;
 
-        // skip data
-        // todo
+        // print data only if its a nested bundle
+         // If it's a bundle, include nested items
+         if let Some(bundle) = &self.nested_bundle {
+            state.serialize_field("nested_items", &bundle)?;
+        }
     
         state.end()
     }
@@ -87,6 +91,31 @@ impl DataItem {
         let mut hasher = Sha256::new();
         hasher.update(&self.signature);
         hasher.finalize().into()
+    }
+
+    // Add method to check if this item could be a bundle
+    fn is_bundle(&self) -> bool {
+        self.tags.iter().any(|tag| {
+            tag.try_to_utf8()
+                .map(|(name, value)| name == "Bundle-Format" && value == "binary")
+                .unwrap_or(false)
+        }) && self.tags.iter().any(|tag| {
+            tag.try_to_utf8()
+                .map(|(name, value)| name == "Bundle-Version" && value == "2.0.0")
+                .unwrap_or(false)
+        })
+    }
+
+    // Try to parse nested bundle
+    fn try_parse_nested(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        println!("Checking if item is a bundle...");
+        if self.is_bundle() {
+            // Try to parse data as a bundle
+            let bundle = Bundle::try_from(Bytes::from(self.data.clone()))?;
+            println!("Item is a bundle with {} items", bundle.item_count);
+            self.nested_bundle = Some(Box::new(bundle));
+        }
+        Ok(())
     }
 }
 
@@ -206,7 +235,7 @@ impl TryFrom<Bytes> for DataItem {
         // todo: ignore data becuase we only need to index everything else
         let data = bytes.to_vec();
 
-        Ok(DataItem {
+        let mut item = DataItem {
             signature_type,
             signature,
             owner,
@@ -214,7 +243,13 @@ impl TryFrom<Bytes> for DataItem {
             anchor,
             tags,
             data,
-        })
+            nested_bundle: None,
+        };
+
+
+        item.try_parse_nested()?;
+
+        Ok(item)
     }
 }
 
@@ -255,9 +290,14 @@ impl TryFrom<Bytes> for Bundle {
             }
 
             let item_data = bytes.slice(..entry.size as usize);
-            let item = DataItem::try_from(item_data)?;
+            let mut item = DataItem::try_from(item_data)?;
+            
+            if item.is_bundle() {
+                let nested_data = Bytes::from(std::mem::take(&mut item.data));
+                item.nested_bundle = Some(Box::new(Bundle::try_from(nested_data)?));
+            }
+            
             bytes.advance(entry.size as usize);
-
             items.push(item);
         }
 
@@ -276,24 +316,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bundle_data = fetch_all_bundle_data(&args.tx_id)?;
     let bundle = Bundle::try_from(bundle_data)?;
 
-    println!("\nBundle entries:");
-
-    for (i, entry) in bundle.entries.iter().enumerate() {
-        if i > 2 {
-            break;
-        }
-        println!("Entry {}: size={}, id={:?}", i, entry.size, entry.id);
-
-    }
-
-    println!("\nParsed data items:");
-    for (i, item) in bundle.items.iter().enumerate() {
-        if i > 2 {
-            break;
-        }
-        println!("Data item {}", serde_json::to_string_pretty(&item)?);
-
-    }
+    let json = serde_json::to_string_pretty(&bundle)?;
+    fs::write(&args.output, json)?;
+    println!("Bundle data written to {}", args.output.display());
 
     Ok(())
 }
