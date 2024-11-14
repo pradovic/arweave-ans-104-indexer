@@ -46,14 +46,14 @@ impl Serialize for DataItem {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("DataItem", 6)?;
+        let mut state = serializer.serialize_struct("DataItem", 7)?;
 
         // id is calculated from signature
         let id = self.calculate_id();
         state.serialize_field("id", &BASE64_URL.encode(id))?;
         
         // Base64URL encode binary fields
-        //state.serialize_field("signature", &BASE64_URL.encode(&self.signature))?;
+        state.serialize_field("signature", &BASE64_URL.encode(&self.signature))?;
         state.serialize_field("owner", &BASE64_URL.encode(&self.owner))?;
         
         // Handle optional target
