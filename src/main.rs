@@ -1,16 +1,13 @@
-use bytes::{Buf, Bytes};
 use clap::Parser as ClapParser;
-use serde::{Deserialize, Serialize, Serializer};
-use std::io::{BufReader, Read};
-use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
-use std::fs;
-
-
+use reqwest::Client;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL;
 use base64::Engine;
 
-const CHUNK_SIZE: usize = 1024 * 1024; // 1MB chunks
+use serde::Serializer;
+use serde::ser::SerializeStruct;
+
 
 #[derive(ClapParser)]
 #[command(author, version, about, long_about = None)]
@@ -21,19 +18,6 @@ struct Args {
     output: std::path::PathBuf,
 }
 
-#[derive(Debug, Serialize)]
-struct Bundle {
-    item_count: u32,
-    entries: Vec<BundleEntry>,
-    items: Vec<DataItem>,
-}
-
-#[derive(Debug, Serialize)]
-struct BundleEntry {
-    size: u32,
-    id: [u8; 32],
-}
-
 #[derive(Debug)]
 struct DataItem {
     signature_type: u16,
@@ -42,17 +26,17 @@ struct DataItem {
     target: Option<[u8; 32]>,
     anchor: Option<[u8; 32]>,
     tags: Vec<Tag>,
-    data: Vec<u8>,
-    // Add field for nested bundle
-    nested_bundle: Option<Box<Bundle>>,
+    bundled_in: String,
+    is_bundle: bool,
 }
 
+
 impl Serialize for DataItem {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("DataItem", 7)?;
+        let mut state = serializer.serialize_struct("DataItem", 8)?;
 
         let id = self.calculate_id();
         state.serialize_field("id", &BASE64_URL.encode(id))?;
@@ -74,15 +58,20 @@ impl Serialize for DataItem {
         
         state.serialize_field("tags", &self.tags)?;
 
-        // print data only if its a nested bundle
-         // If it's a bundle, include nested items
-         if let Some(bundle) = &self.nested_bundle {
-            state.serialize_field("nested_items", &bundle)?;
-        }
-    
+        state.serialize_field("bundled_in", &self.bundled_in)?;
+
+        state.serialize_field("is_bundle", &self.is_bundle)?;
+
         state.end()
     }
 }
+
+
+enum DataItemResult {
+    Item(DataItem),
+    NestedBundle(DataItem),
+}
+
 
 
 impl DataItem {
@@ -105,21 +94,9 @@ impl DataItem {
                 .unwrap_or(false)
         })
     }
-
-    // Try to parse nested bundle
-    fn try_parse_nested(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        println!("Checking if item is a bundle...");
-        if self.is_bundle() {
-            // Try to parse data as a bundle
-            let bundle = Bundle::try_from(Bytes::from(self.data.clone()))?;
-            println!("Item is a bundle with {} items", bundle.item_count);
-            self.nested_bundle = Some(Box::new(bundle));
-        }
-        Ok(())
-    }
 }
 
-// Helper function for number parsing (same as before)
+
 fn bytes_to_number(bytes: &[u8]) -> u64 {
     let mut value = 0u64;
     for &byte in bytes.iter().rev() {
@@ -128,230 +105,6 @@ fn bytes_to_number(bytes: &[u8]) -> u64 {
     value
 }
 
-impl TryFrom<Bytes> for DataItem {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(mut bytes: Bytes) -> Result<Self, Self::Error> {
-        // signature type (2 bytes)
-        if bytes.remaining() < 2 {
-            return Err("Not enough bytes for signature type".into());
-        }
-        let signature_type = bytes.get_u16_le();
-
-        // signature based on type
-        let sig_length = match signature_type {
-            1 => 512, // RSA
-            2 => 64,  // ED25519
-            _ => return Err(format!("Unknown signature type: {}", signature_type).into()),
-        };
-
-        if bytes.remaining() < sig_length {
-            return Err("Not enough bytes for signature".into());
-        }
-        let mut signature = vec![0u8; sig_length];
-        bytes.copy_to_slice(&mut signature);
-
-        // owner
-        let owner_length = match signature_type {
-            1 => 512, // RSA
-            2 => 32,  // ED25519
-            _ => return Err("Invalid signature type for owner".into()),
-        };
-
-        if bytes.remaining() < owner_length {
-            return Err("Not enough bytes for owner".into());
-        }
-        let mut owner = vec![0u8; owner_length];
-        bytes.copy_to_slice(&mut owner);
-
-        // target (optional)
-        if bytes.remaining() < 1 {
-            return Err("Not enough bytes for target presence byte".into());
-        }
-        let target = match bytes.get_u8() {
-            1 => {
-                if bytes.remaining() < 32 {
-                    return Err("Not enough bytes for target".into());
-                }
-                let mut target = [0u8; 32];
-                bytes.copy_to_slice(&mut target);
-                Some(target)
-            }
-            0 => None,
-            _ => return Err("Invalid target presence byte".into()),
-        };
-
-        // anchor (optional)
-        if bytes.remaining() < 1 {
-            return Err("Not enough bytes for anchor presence byte".into());
-        }
-        let anchor = match bytes.get_u8() {
-            1 => {
-                if bytes.remaining() < 32 {
-                    return Err("Not enough bytes for anchor".into());
-                }
-                let mut anchor = [0u8; 32];
-                bytes.copy_to_slice(&mut anchor);
-                Some(anchor)
-            }
-            0 => None,
-            _ => return Err("Invalid anchor presence byte".into()),
-        };
-
-        //  tags
-        if bytes.remaining() < 16 {
-            return Err("Not enough bytes for tag counts".into());
-        }
-
-        let mut tag_count_bytes = [0u8; 8];
-        bytes.copy_to_slice(&mut tag_count_bytes);
-        let tag_count = bytes_to_number(&tag_count_bytes) as usize;
-
-        let mut tags_length_bytes = [0u8; 8];
-        bytes.copy_to_slice(&mut tags_length_bytes);
-        let tags_length = bytes_to_number(&tags_length_bytes) as usize;
-
-
-        if bytes.remaining() < tags_length {
-            return Err("Not enough bytes for tags data".into());
-        }
-
-        let tags_slice = bytes.slice(..tags_length);
-
-        let tags = parse_avro_tags(tags_slice.as_ref())?;
-
-        if tags.len() != tag_count {
-            return Err(format!(
-                "Tag count mismatch: header says {} but found {}",
-                tag_count,
-                tags.len()
-            )
-            .into());
-        }
-
-        bytes.advance(tags_length);
-
-        //  Remaining bytes are data
-        // todo: ignore data becuase we only need to index everything else
-        let data = bytes.to_vec();
-
-        let mut item = DataItem {
-            signature_type,
-            signature,
-            owner,
-            target,
-            anchor,
-            tags,
-            data,
-            nested_bundle: None,
-        };
-
-
-        item.try_parse_nested()?;
-
-        Ok(item)
-    }
-}
-
-impl TryFrom<Bytes> for Bundle {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(mut bytes: Bytes) -> Result<Self, Self::Error> {
-        if bytes.remaining() < 32 {
-            return Err("Not enough bytes for item count".into());
-        }
-        let mut count_bytes = [0u8; 32];
-        bytes.copy_to_slice(&mut count_bytes);
-        let item_count = bytes_to_number(&count_bytes) as u32;
-
-        // headers section (64 bytes per item)
-        let mut entries = Vec::with_capacity(item_count as usize);
-        for i in 0..item_count {
-            if bytes.remaining() < 64 {
-                return Err(format!("Not enough bytes for bundle entry {}", i).into());
-            }
-
-            // length (32 bytes)
-            let mut size_bytes = [0u8; 32];
-            bytes.copy_to_slice(&mut size_bytes);
-            let size = bytes_to_number(&size_bytes) as u32;
-
-            // ID (32 bytes)
-            let mut id = [0u8; 32];
-            bytes.copy_to_slice(&mut id);
-
-            entries.push(BundleEntry { size, id });
-        }
-
-        let mut items = Vec::with_capacity(item_count as usize);
-        for (i, entry) in entries.iter().enumerate() {
-            if bytes.remaining() < entry.size as usize {
-                return Err(format!("Not enough bytes for data item {}", i).into());
-            }
-
-            let item_data = bytes.slice(..entry.size as usize);
-            let mut item = DataItem::try_from(item_data)?;
-            
-            if item.is_bundle() {
-                let nested_data = Bytes::from(std::mem::take(&mut item.data));
-                item.nested_bundle = Some(Box::new(Bundle::try_from(nested_data)?));
-            }
-            
-            bytes.advance(entry.size as usize);
-            items.push(item);
-        }
-
-        Ok(Bundle {
-            item_count,
-            entries,
-            items,
-        })
-    }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-
-    println!("Fetching and parsing bundle data...");
-    let bundle_data = fetch_all_bundle_data(&args.tx_id)?;
-    let bundle = Bundle::try_from(bundle_data)?;
-
-    let json = serde_json::to_string_pretty(&bundle)?;
-    fs::write(&args.output, json)?;
-    println!("Bundle data written to {}", args.output.display());
-
-    Ok(())
-}
-
-fn fetch_all_bundle_data(tx_id: &str) -> Result<Bytes, Box<dyn std::error::Error>> {
-    let url = format!("https://arweave.net/{}", tx_id);
-    println!("Fetching from URL: {}", url);
-
-    let response = ureq::get(&url).call()?;
-
-    let len = response
-        .header("Content-Length")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
-    println!("Expected content length: {}", len);
-
-    let mut reader = BufReader::new(response.into_reader());
-    let mut bytes = Vec::with_capacity(len);
-    let mut buffer = vec![0; CHUNK_SIZE];
-
-    loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => break, // EOF
-            Ok(n) => {
-                bytes.extend_from_slice(&buffer[..n]);
-            }
-            Err(e) => return Err(format!("Error reading chunk: {}", e).into()),
-        }
-    }
-
-    println!("Completed reading {} bytes", bytes.len());
-    Ok(Bytes::from(bytes))
-}
 
 // tags
 
@@ -363,6 +116,31 @@ struct Tag {
 
     value: Vec<u8>,
 }
+
+
+impl Serialize for Tag {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Tag", 2)?;
+        
+        // Try to decode to UTF-8 first, if fails fallback to base64
+        match (String::from_utf8(self.name.clone()), String::from_utf8(self.value.clone())) {
+            (Ok(name), Ok(value)) => {
+                state.serialize_field("name", &name)?;
+                state.serialize_field("value", &value)?;
+            },
+            _ => {
+                state.serialize_field("name", &BASE64_URL.encode(&self.name))?;
+                state.serialize_field("value", &BASE64_URL.encode(&self.value))?;
+            }
+        }
+        
+        state.end()
+    }
+}
+
 
 const TAGS_SCHEMA: &str = r#"{
     "type": "array",
@@ -377,7 +155,7 @@ const TAGS_SCHEMA: &str = r#"{
   }"#;
 
 impl Tag {
-    fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+    fn validate(&self) -> Result<()> {
         if self.name.len() > 1024 {
             return Err("Tag name exceeds 1024 bytes".into());
         }
@@ -390,7 +168,7 @@ impl Tag {
         Ok(())
     }
 
-    fn try_to_utf8(&self) -> Result<(String, String), std::string::FromUtf8Error> {
+    fn try_to_utf8(&self) -> Result<(String, String)> {
         Ok((
             String::from_utf8(self.name.clone())?,
             String::from_utf8(self.value.clone())?
@@ -399,22 +177,8 @@ impl Tag {
 }
 
 
-impl Serialize for Tag {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("Tag", 2)?;
-        // Base64URL encode both name and value
-        state.serialize_field("name", &BASE64_URL.encode(&self.name))?;
-        state.serialize_field("value", &BASE64_URL.encode(&self.value))?;
-        state.end()
-    }
-}
 
-
-
-fn parse_avro_tags(bytes: &[u8]) -> Result<Vec<Tag>, Box<dyn std::error::Error>> {
+fn parse_avro_tags(bytes: &[u8]) -> Result<Vec<Tag>> {
     let schema: serde_avro_fast::Schema = TAGS_SCHEMA.parse()?;
     let tags: Vec<Tag> = serde_avro_fast::from_datum_slice(bytes, &schema)?;
 
@@ -429,4 +193,210 @@ fn parse_avro_tags(bytes: &[u8]) -> Result<Vec<Tag>, Box<dyn std::error::Error>>
     }
 
     Ok(tags)
+}
+
+impl DataItem {
+    pub async fn parse_stream<R: AsyncRead + Unpin>(
+        stream: &mut R,
+        bundled_in: String,
+        size: usize,
+    ) -> Result<DataItemResult> {
+        let mut bytes_read = 0;
+        
+        // Read signature type (2 bytes)
+        let mut sig_type = [0u8; 2];
+        stream.read_exact(&mut sig_type).await?;
+        bytes_read += 2;
+        let signature_type = u16::from_le_bytes(sig_type);
+
+        // Read signature
+        let sig_length = match signature_type {
+            1 => 512, // RSA
+            2 => 64,  // ED25519
+            _ => return Err(format!("Unknown signature type: {}", signature_type).into()),
+        };
+        let mut signature = vec![0u8; sig_length];
+        stream.read_exact(&mut signature).await?;
+        bytes_read += sig_length;
+
+        // Read owner
+        let owner_length = match signature_type {
+            1 => 512, // RSA
+            2 => 32,  // ED25519
+            _ => return Err("Invalid signature type for owner".into()),
+        };
+        let mut owner = vec![0u8; owner_length];
+        stream.read_exact(&mut owner).await?;
+        bytes_read += owner_length;
+
+        // Read target (optional)
+        let mut presence = [0u8; 1];
+        stream.read_exact(&mut presence).await?;
+        bytes_read += 1;
+        let target = match presence[0] {
+            1 => {
+                let mut target = [0u8; 32];
+                stream.read_exact(&mut target).await?;
+                bytes_read += 32;
+                Some(target)
+            }
+            0 => None,
+            _ => return Err("Invalid target presence byte".into()),
+        };
+
+        // Read anchor (optional)
+        stream.read_exact(&mut presence).await?;
+        bytes_read += 1;
+        let anchor = match presence[0] {
+            1 => {
+                let mut anchor = [0u8; 32];
+                stream.read_exact(&mut anchor).await?;
+                bytes_read += 32;
+                Some(anchor)
+            }
+            0 => None,
+            _ => return Err("Invalid anchor presence byte".into()),
+        };
+
+        // Read tag counts
+        let mut tag_count_bytes = [0u8; 8];
+        stream.read_exact(&mut tag_count_bytes).await?;
+        bytes_read += 8;
+        let tag_count = bytes_to_number(&tag_count_bytes) as usize;
+
+        let mut tags_length_bytes = [0u8; 8];
+        stream.read_exact(&mut tags_length_bytes).await?;
+        bytes_read += 8;
+        let tags_length = bytes_to_number(&tags_length_bytes) as usize;
+
+        // Read tags
+        let mut tags_bytes = vec![0u8; tags_length];
+        stream.read_exact(&mut tags_bytes).await?;
+        bytes_read += tags_length;
+        let tags = parse_avro_tags(&tags_bytes)?;
+
+        if tags.len() != tag_count {
+            return Err(format!(
+                "Tag count mismatch: header says {} but found {}",
+                tag_count,
+                tags.len()
+            )
+            .into());
+        }
+
+        let item = DataItem {
+            signature_type,
+            signature,
+            owner,
+            target,
+            anchor,
+            tags,
+            bundled_in,
+            is_bundle: false, // Will be set to true if needed
+        };
+
+        if item.is_bundle() {
+            Ok(DataItemResult::NestedBundle(
+                DataItem { is_bundle: true, ..item }
+            ))
+        } else {
+            // Skip remaining data bytes
+            let remaining = size - bytes_read;
+            let mut skip_buf = vec![0u8; remaining];
+            stream.read_exact(&mut skip_buf).await?;
+            
+            Ok(DataItemResult::Item(item))
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Bundle {
+    item_count: u32,
+    entries: Vec<BundleEntry>,
+}
+
+#[derive(Debug)]
+struct BundleEntry {
+    size: u32,
+    id: [u8; 32],
+}
+
+use tokio::io::AsyncReadExt;  
+use tokio::io::AsyncRead;     
+
+impl Bundle {
+    async fn parse_stream<R: AsyncRead + Unpin>(
+        stream: &mut R,
+    ) -> Result<Self> {
+        let mut count_buf = [0u8; 32];
+        stream.read_exact(&mut count_buf).await?;
+        let item_count = bytes_to_number(&count_buf) as u32;
+
+        let mut entries = Vec::with_capacity(item_count as usize);
+        for _ in 0..item_count {
+            let mut size_buf = [0u8; 32];
+            stream.read_exact(&mut size_buf).await?;
+            let size = bytes_to_number(&size_buf) as u32;
+
+            let mut id = [0u8; 32];
+            stream.read_exact(&mut id).await?;
+
+            entries.push(BundleEntry { size, id });
+        }
+
+        Ok(Bundle {
+            item_count,
+            entries,
+        })
+    }
+}
+
+use async_recursion::async_recursion;
+use tokio::io::AsyncWriteExt;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+#[async_recursion]
+async fn process_bundle(
+    stream: &mut (impl AsyncRead + Unpin + Send),
+    file: &mut tokio::fs::File,
+    tx_id: &str,
+) -> Result<()> {
+    let bundle = Bundle::parse_stream(stream).await?;
+    
+
+   for (i, entry) in bundle.entries.into_iter().enumerate() {
+    match DataItem::parse_stream(stream, tx_id.to_string(), entry.size as usize).await? {
+        DataItemResult::Item(item) => {
+            file.write_all(serde_json::to_string_pretty(&item)?.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+        },
+        DataItemResult::NestedBundle(item) => {
+            file.write_all(serde_json::to_string_pretty(&item)?.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+            process_bundle(stream, file, &BASE64_URL.encode(entry.id)).await?;
+        }
+    }
+    println!("Finished processing entry {}", i + 1);
+}
+    
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+    let mut file = tokio::fs::File::create(&args.output).await?;
+    
+    let client = Client::new();
+    let response = client.get(format!("https://arweave.net/{}", args.tx_id))
+        .send()
+        .await?;
+    
+    let response_bytes = response.bytes().await?;
+    let mut cursor = std::io::Cursor::new(response_bytes);
+    
+    process_bundle(&mut cursor, &mut file, &args.tx_id).await?;
+    
+    Ok(())
 }
