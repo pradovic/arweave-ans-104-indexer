@@ -6,7 +6,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use clap::Parser as ClapParser;
 
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufReader};
 
 #[derive(ClapParser)]
 #[command(author, version, about, long_about = None)]
@@ -62,9 +62,10 @@ async fn main() {
         }
     };
 
-    let mut cursor = std::io::Cursor::new(response_bytes);
+    let cursor = std::io::Cursor::new(response_bytes);
+    let mut buffered = BufReader::with_capacity(32768, cursor);
 
-    match arweave_ans_1040_indexer::process_bundle(&mut cursor, tx, &args.tx_id).await {
+    match arweave_ans_1040_indexer::process_bundle(&mut buffered, tx, &args.tx_id).await {
         Ok(_) => tracing::info!("Processing complete"),
         Err(e) => {
             tracing::error!("Processing failed: {}", e);
@@ -78,7 +79,6 @@ async fn main() {
     }
 }
 
-
 async fn write_task(
     mut rx: mpsc::Receiver<arweave_ans_1040_indexer::DataItem>,
     mut file: tokio::fs::File,
@@ -90,4 +90,3 @@ async fn write_task(
     }
     Ok(())
 }
-

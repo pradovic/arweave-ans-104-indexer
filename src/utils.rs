@@ -19,7 +19,7 @@ mod tests {
 
     #[test]
     fn test_bytes_to_number_within_usize_range() {
-        let bytes = [0x01, 0x00, 0x00, 0x00]; 
+        let bytes = [0x01, 0x00, 0x00, 0x00];
         assert_eq!(bytes_to_number(&bytes).unwrap(), 1);
     }
 

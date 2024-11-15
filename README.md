@@ -88,11 +88,15 @@ The CLI is designed to be:
 
 4. **Full spec support**: The spec itself allows for super large number of entries 32byte number, with Nx64 number of entrie pairs. In order to support this efficiently we would probably need a more robust approach, with the cluster of instances.
 
+5. **Resumability**: The CLI expects to finish in one go. In order to support resumability, we would need to mark down what was indexed so far. It would probably be helpful to use additional data storage for this.
+
 ---
 
 ## **Possible improvements**
 - Add data storage as cache for entries, to support super large number of entries that can not fit the memory
 - To support super large bundles, we would probably need to partition it and feed it to the more robust and large scale indexing cluster.
+- More extenstive edge-case unit testing. For this, I would need more investigation and experience with the protocol, as I suspect lot's of the things could go wrong, and it depends on the usage of the cli what should be supported and handled.
+- Test different buffer sizes
 
 
 
