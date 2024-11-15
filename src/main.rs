@@ -63,7 +63,7 @@ async fn main() {
     };
 
     let cursor = std::io::Cursor::new(response_bytes);
-    let mut buffered = BufReader::with_capacity(32768, cursor);
+    let mut buffered = BufReader::with_capacity(65536, cursor);
 
     match arweave_ans_1040_indexer::process_bundle(&mut buffered, tx, &args.tx_id).await {
         Ok(_) => tracing::info!("Processing complete"),
