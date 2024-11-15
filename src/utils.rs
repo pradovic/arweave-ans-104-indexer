@@ -2,9 +2,11 @@ pub fn bytes_to_number(bytes: &[u8]) -> Result<usize, String> {
     let mut value = 0usize;
 
     for &byte in bytes.iter().rev() {
-        value = value.checked_mul(256)
+        value = value
+            .checked_mul(256)
             .ok_or("Value exceeds usize range: multiplication overflow")?;
-        value = value.checked_add(byte as usize)
+        value = value
+            .checked_add(byte as usize)
             .ok_or("Value exceeds usize range: addition overflow")?;
     }
 
