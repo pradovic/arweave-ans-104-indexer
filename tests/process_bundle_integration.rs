@@ -85,7 +85,7 @@ async fn test_process_bundle_integration_small() {
 }
 
 #[tokio::test]
-async fn test_process_bundle_integration_big() {
+async fn test_process_bundle_integration_big_nested() {
     let tx_id = "H95gGHbh3dbpCCLAk36sNHCOCgsZ1hy8IG9IEXDNl3o";
     let expected_output_path = "tests/samples/big";
 

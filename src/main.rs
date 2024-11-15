@@ -81,7 +81,7 @@ async fn main() {
 
 // the output format is not optimized for performance
 // the goal was simplicity and readability
-// the performance can we vastly improved if the intended use case is for machine to machine communication
+// the performance can be vastly improved if the intended use case is for machine to machine communication
 // in this case we would choose one of the more efficient binary serialization formats (such as Protocol Buffers, Apache Avro, or MessagePack, BSON, ...)
 async fn write_task(
     mut rx: mpsc::Receiver<arweave_ans_1040_indexer::DataItem>,
