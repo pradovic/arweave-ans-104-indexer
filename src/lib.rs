@@ -374,7 +374,7 @@ pub async fn process_bundle(
     );
 
     for entry in bundle.entries {
-        match DataItem::parse_stream(stream, bundled_in.to_string(), entry.size as usize).await {
+        match DataItem::parse_stream(stream, bundled_in.to_string(), entry.size).await {
             Ok(data_item) => {
                 if data_item.is_bundle {
                     tx.send(data_item)
@@ -394,7 +394,7 @@ pub async fn process_bundle(
                 message,
                 bytes_read,
             }) => {
-                let remaining = entry.size as usize - bytes_read;
+                let remaining = entry.size - bytes_read;
                 tracing::warn!(
                     "Parse error: {}, skipping {} bytes for entry {}",
                     message,
