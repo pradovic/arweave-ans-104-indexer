@@ -8,24 +8,12 @@ use clap::Parser as ClapParser;
 
 use tokio::io::AsyncWriteExt;
 
-async fn write_task(
-    mut rx: mpsc::Receiver<arweave_ans_1040_indexer::DataItem>,
-    mut file: tokio::fs::File,
-) -> std::io::Result<()> {
-    while let Some(item) = rx.recv().await {
-        file.write_all(serde_json::to_string_pretty(&item)?.as_bytes())
-            .await?;
-        file.write_all(b"\n").await?;
-    }
-    Ok(())
-}
-
 #[derive(ClapParser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     tx_id: String,
 
-    #[arg(short, long, default_value = "bundle.json")]
+    #[arg(short, long, default_value = "bundle")]
     output: std::path::PathBuf,
 }
 
@@ -89,3 +77,17 @@ async fn main() {
         Err(e) => tracing::error!("Write task failed: {}", e),
     }
 }
+
+
+async fn write_task(
+    mut rx: mpsc::Receiver<arweave_ans_1040_indexer::DataItem>,
+    mut file: tokio::fs::File,
+) -> std::io::Result<()> {
+    while let Some(item) = rx.recv().await {
+        file.write_all(serde_json::to_string_pretty(&item)?.as_bytes())
+            .await?;
+        file.write_all(b"\n").await?;
+    }
+    Ok(())
+}
+
