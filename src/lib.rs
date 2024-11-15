@@ -19,17 +19,14 @@ use tags::Tag;
 
 #[derive(Debug)]
 pub enum StreamParseError {
-    ReadError(std::io::Error),
-    ParseError {
-        message: String,
-        bytes_read: usize,
-    },
+    FatalError(String),
+    ParseError { message: String, bytes_read: usize },
 }
 
 impl std::fmt::Display for StreamParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StreamParseError::ReadError(e) => write!(f, "Read error: {}", e),
+            StreamParseError::FatalError(e) => write!(f, "Fatal error: {}", e),
             StreamParseError::ParseError { message, .. } => write!(f, "Parse error: {}", message),
         }
     }
@@ -95,7 +92,10 @@ impl DataItem {
         let mut bytes_read = 0;
 
         let mut sig_type = [0u8; 2];
-        stream.read_exact(&mut sig_type).await.map_err(StreamParseError::ReadError)?;
+        stream
+            .read_exact(&mut sig_type)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         bytes_read += 2;
         let signature_type = u16::from_le_bytes(sig_type);
 
@@ -111,7 +111,10 @@ impl DataItem {
         };
 
         let mut signature = vec![0u8; sig_length];
-        stream.read_exact(&mut signature).await.map_err(StreamParseError::ReadError)?;
+        stream
+            .read_exact(&mut signature)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         bytes_read += sig_length;
 
         let owner_length = match signature_type {
@@ -125,17 +128,26 @@ impl DataItem {
             }
         };
         let mut owner = vec![0u8; owner_length];
-        stream.read_exact(&mut owner).await.map_err(StreamParseError::ReadError)?;
+        stream
+            .read_exact(&mut owner)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         bytes_read += owner_length;
 
         let mut presence = [0u8; 1];
-        stream.read_exact(&mut presence).await.map_err(StreamParseError::ReadError)?;
+        stream
+            .read_exact(&mut presence)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         bytes_read += 1;
 
         let target = match presence[0] {
             1 => {
                 let mut target = [0u8; 32];
-                stream.read_exact(&mut target).await.map_err(StreamParseError::ReadError)?;
+                stream
+                    .read_exact(&mut target)
+                    .await
+                    .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
                 bytes_read += 32;
                 Some(target)
             }
@@ -148,13 +160,19 @@ impl DataItem {
             }
         };
 
-        stream.read_exact(&mut presence).await.map_err(StreamParseError::ReadError)?;
+        stream
+            .read_exact(&mut presence)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         bytes_read += 1;
 
         let anchor = match presence[0] {
             1 => {
                 let mut anchor = [0u8; 32];
-                stream.read_exact(&mut anchor).await.map_err(StreamParseError::ReadError)?;
+                stream
+                    .read_exact(&mut anchor)
+                    .await
+                    .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
                 bytes_read += 32;
                 Some(anchor)
             }
@@ -168,10 +186,18 @@ impl DataItem {
         };
 
         let mut tag_count_bytes = [0u8; 8];
-        stream.read_exact(&mut tag_count_bytes).await.map_err(StreamParseError::ReadError)?;
+        stream
+            .read_exact(&mut tag_count_bytes)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         bytes_read += 8;
 
-        let tag_count = utils::bytes_to_number(&tag_count_bytes) as usize;
+        let tag_count =
+            utils::bytes_to_number(&tag_count_bytes).map_err(|e| StreamParseError::ParseError {
+                message: format!("Failed to parse tag count: {}", e),
+                bytes_read,
+            })?;
+
         if tag_count > 128 {
             return Err(StreamParseError::ParseError {
                 message: format!("Too many tags: {}", tag_count),
@@ -180,23 +206,39 @@ impl DataItem {
         }
 
         let mut tags_length_bytes = [0u8; 8];
-        stream.read_exact(&mut tags_length_bytes).await.map_err(StreamParseError::ReadError)?;
+        stream
+            .read_exact(&mut tags_length_bytes)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         bytes_read += 8;
 
-        let tags_length = utils::bytes_to_number(&tags_length_bytes) as usize;
+        let tags_length = utils::bytes_to_number(&tags_length_bytes).map_err(|e| {
+            StreamParseError::ParseError {
+                message: format!("Failed to parse tags length: {}", e),
+                bytes_read,
+            }
+        })?;
 
         let mut tags_bytes = vec![0u8; tags_length];
-        stream.read_exact(&mut tags_bytes).await.map_err(StreamParseError::ReadError)?;
+        stream
+            .read_exact(&mut tags_bytes)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         bytes_read += tags_length;
 
-        let (tags, is_bundle) = parse_avro_tags(&tags_bytes).map_err(|e| StreamParseError::ParseError {
-            message: format!("Failed to parse tags: {}", e),
-            bytes_read,
-        })?;
+        let (tags, is_bundle) =
+            parse_avro_tags(&tags_bytes).map_err(|e| StreamParseError::ParseError {
+                message: format!("Failed to parse tags: {}", e),
+                bytes_read,
+            })?;
 
         if tags.len() != tag_count {
             return Err(StreamParseError::ParseError {
-                message: format!("Tag count mismatch: expected {}, found {}", tag_count, tags.len()),
+                message: format!(
+                    "Tag count mismatch: expected {}, found {}",
+                    tag_count,
+                    tags.len()
+                ),
                 bytes_read,
             });
         }
@@ -214,13 +256,15 @@ impl DataItem {
         if !is_bundle {
             let remaining = size - bytes_read;
             let mut skip_buf = vec![0u8; remaining];
-            stream.read_exact(&mut skip_buf).await.map_err(StreamParseError::ReadError)?;
+            stream
+                .read_exact(&mut skip_buf)
+                .await
+                .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
         }
 
         Ok(item)
     }
 }
-
 
 // This function is used to parse the tags from the bytes of the tags field in the Arweave transaction.
 // The function returns a tuple containing a vector of tags and a boolean indicating whether the tags are bundled.
@@ -263,33 +307,45 @@ fn parse_avro_tags(bytes: &[u8]) -> Result<(Vec<Tag>, bool), String> {
     Ok((valid_tags, is_bundle))
 }
 
-
 #[derive(Debug)]
 pub struct Bundle {
-    pub item_count: u32,
+    pub item_count: usize,
     pub entries: Vec<BundleEntry>,
 }
 
 #[derive(Debug)]
 pub struct BundleEntry {
-    pub size: u32,
+    pub size: usize,
     pub id: [u8; 32],
 }
 
 impl Bundle {
-    pub async fn parse_stream<R: AsyncRead + Unpin>(stream: &mut R) -> Result<Self, StreamParseError> {
+    pub async fn parse_stream<R: AsyncRead + Unpin>(
+        stream: &mut R,
+    ) -> Result<Self, StreamParseError> {
         let mut count_buf = [0u8; 32];
-        stream.read_exact(&mut count_buf).await.map_err(StreamParseError::ReadError)?;
-        let item_count = utils::bytes_to_number(&count_buf) as u32;
+        stream
+            .read_exact(&mut count_buf)
+            .await
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
+        let item_count = utils::bytes_to_number(&count_buf)
+            .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
 
         let mut entries = Vec::with_capacity(item_count as usize);
         for _ in 0..item_count {
             let mut size_buf = [0u8; 32];
-            stream.read_exact(&mut size_buf).await.map_err(StreamParseError::ReadError)?;
-            let size = utils::bytes_to_number(&size_buf) as u32;
+            stream
+                .read_exact(&mut size_buf)
+                .await
+                .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
+            let size = utils::bytes_to_number(&size_buf)
+                .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
 
             let mut id = [0u8; 32];
-            stream.read_exact(&mut id).await.map_err(StreamParseError::ReadError)?;
+            stream
+                .read_exact(&mut id)
+                .await
+                .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
 
             entries.push(BundleEntry { size, id });
         }
@@ -331,10 +387,13 @@ pub async fn process_bundle(
                         .map_err(|e| format!("Channel send error: {}", e))?;
                 }
             }
-            Err(StreamParseError::ReadError(e)) => {
+            Err(StreamParseError::FatalError(e)) => {
                 return Err(format!("Stream read error: {}", e));
             }
-            Err(StreamParseError::ParseError { message, bytes_read }) => {
+            Err(StreamParseError::ParseError {
+                message,
+                bytes_read,
+            }) => {
                 let remaining = entry.size as usize - bytes_read;
                 tracing::warn!(
                     "Parse error: {}, skipping {} bytes for entry {}",
@@ -353,6 +412,3 @@ pub async fn process_bundle(
 
     Ok(())
 }
-
-
-

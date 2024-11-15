@@ -73,9 +73,7 @@ impl Tag {
             return Err(ValidationError("value exceeds 3072 bytes".into()));
         }
         if self.name.is_empty() || self.value.is_empty() {
-            return Err(ValidationError(
-                "name and value must not be empty".into(),
-            ));
+            return Err(ValidationError("name and value must not be empty".into()));
         }
         Ok(())
     }
@@ -105,7 +103,7 @@ mod tests {
     #[test]
     fn test_validate_name_too_long() {
         let tag = Tag {
-            name: vec![b'a'; 1025], 
+            name: vec![b'a'; 1025],
             value: vec![b'v', b'a', b'l', b'u', b'e'],
         };
 
@@ -121,7 +119,7 @@ mod tests {
     fn test_validate_value_too_long() {
         let tag = Tag {
             name: vec![b't', b'e', b's', b't'],
-            value: vec![b'b'; 3073], 
+            value: vec![b'b'; 3073],
         };
 
         let result = tag.validate();
@@ -192,11 +190,10 @@ mod tests {
     fn test_try_to_utf8_invalid_utf8_value() {
         let tag = Tag {
             name: vec![b't', b'e', b's', b't'],
-            value: vec![0x80, 0x81, 0x82], 
+            value: vec![0x80, 0x81, 0x82],
         };
 
         let result = tag.try_to_utf8();
         assert!(result.is_err());
     }
 }
-

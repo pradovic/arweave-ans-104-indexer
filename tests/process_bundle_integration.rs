@@ -1,9 +1,9 @@
 use arweave_ans_1040_indexer::process_bundle;
-use std::fs;
-use tokio::sync::mpsc;
-use std::io::Cursor;
 use fastuuid::Generator;
+use std::fs;
+use std::io::Cursor;
 use std::io::Write;
+use tokio::sync::mpsc;
 
 async fn run_process_bundle_test(tx_id: &str, expected_output_path: &str) {
     let generator = Generator::new();
@@ -49,9 +49,11 @@ async fn run_process_bundle_test(tx_id: &str, expected_output_path: &str) {
         file_path: actual_output_path.clone(),
     };
 
-    let expected_output = fs::read_to_string(expected_output_path).expect("Failed to read expected output");
+    let expected_output =
+        fs::read_to_string(expected_output_path).expect("Failed to read expected output");
 
-    let actual_output = fs::read_to_string(&actual_output_path).expect("Failed to read actual output");
+    let actual_output =
+        fs::read_to_string(&actual_output_path).expect("Failed to read actual output");
 
     assert_eq!(actual_output, expected_output, "The outputs do not match");
 
@@ -89,5 +91,3 @@ async fn test_process_bundle_integration_big() {
 
     run_process_bundle_test(tx_id, expected_output_path).await;
 }
-
-
