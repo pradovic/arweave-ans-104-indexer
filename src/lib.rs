@@ -222,6 +222,10 @@ impl DataItem {
 }
 
 
+// This function is used to parse the tags from the bytes of the tags field in the Arweave transaction.
+// The function returns a tuple containing a vector of tags and a boolean indicating whether the tags are bundled.
+// The reason for this is to traverse the tags only once and filter and get all information we need.
+// The reason function does not prune the invalid tags is that a lot of existing transactions have some invalid tags (mostly empty value tags).
 fn parse_avro_tags(bytes: &[u8]) -> Result<(Vec<Tag>, bool), String> {
     let schema = tags::TAGS_SCHEMA
         .parse()
@@ -297,7 +301,6 @@ impl Bundle {
     }
 }
 
-
 #[async_recursion]
 pub async fn process_bundle(
     stream: &mut (impl AsyncRead + Unpin + Send),
@@ -350,3 +353,6 @@ pub async fn process_bundle(
 
     Ok(())
 }
+
+
+
