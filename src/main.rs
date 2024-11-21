@@ -1,12 +1,17 @@
+use futures_util::TryStreamExt;
 use reqwest::Client;
-use tokio::sync::mpsc;
+use tokio::{io::BufReader, sync::mpsc};
 
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 use clap::Parser as ClapParser;
 
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
+use tokio_util::io::StreamReader;
+
+
+
 
 #[derive(ClapParser)]
 #[command(author, version, about, long_about = None)]
@@ -54,16 +59,16 @@ async fn main() {
         }
     };
 
-    let response_bytes = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::error!("Failed to read response: {}", e);
-            return;
-        }
-    };
+    let response_bytes = response
+    .bytes_stream()
+    .map_err(|e| {
+        tracing::error!("Failed to fetch transaction: {}", e);
+        std::io::Error::new(std::io::ErrorKind::Other, "Failed to fetch transaction")
+    });
 
-    let cursor = std::io::Cursor::new(response_bytes);
-    let mut buffered = BufReader::with_capacity(65536, cursor);
+    let stream = StreamReader::new(response_bytes);
+    let mut buffered = BufReader::with_capacity(65536, stream);
+
 
     match arweave_ans_1040_indexer::process_bundle(&mut buffered, tx, &args.tx_id).await {
         Ok(_) => tracing::info!("Processing complete"),
