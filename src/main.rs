@@ -10,9 +10,6 @@ use clap::Parser as ClapParser;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::StreamReader;
 
-
-
-
 #[derive(ClapParser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -59,16 +56,13 @@ async fn main() {
         }
     };
 
-    let response_bytes = response
-    .bytes_stream()
-    .map_err(|e| {
+    let response_bytes = response.bytes_stream().map_err(|e| {
         tracing::error!("Failed to fetch transaction: {}", e);
         std::io::Error::new(std::io::ErrorKind::Other, "Failed to fetch transaction")
     });
 
     let stream = StreamReader::new(response_bytes);
     let mut buffered = BufReader::with_capacity(65536, stream);
-
 
     match arweave_ans_1040_indexer::process_bundle(&mut buffered, tx, &args.tx_id).await {
         Ok(_) => tracing::info!("Processing complete"),
