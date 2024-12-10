@@ -62,7 +62,7 @@ async fn main() {
     });
 
     let stream = StreamReader::new(response_bytes);
-    let mut buffered = BufReader::with_capacity(65536, stream);
+    let mut buffered = BufReader::with_capacity(512 * 1024 * 1024, stream);
 
     match arweave_ans_1040_indexer::process_bundle(&mut buffered, tx, &args.tx_id).await {
         Ok(_) => tracing::info!("Processing complete"),

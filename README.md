@@ -22,55 +22,10 @@ To run the CLI, use the following command:
 cargo run -- H95gGHbh3dbpCCLAk36sNHCOCgsZ1hy8IG9IEXDNl3o -o output
 ```
 
-## **Goal**
-The primary goal of this CLI is to parse and process bundled data transactions (ANS-104). The design focuses on handling:
-- **Nested bundles**: Ensuring support for multiple levels of nested data.
-- **Large numbers of entries**: Managing high entry counts with minimal memory overhead.
-- **Huge data sizes**: Employing a streaming approach to process data that may exceed memory capacity.
-
-### **Edge Cases Addressed**
-1. **Large number of entries with small data sizes**:
-   - Efficiently processes bundles with numerous small items.
-2. **Huge data sizes**:
-   - Handles streaming of large payloads without requiring full data to reside in memory.
-
-### **Streaming Approach**
-To handle large data sizes, a streaming approach is employed. This allows processing of massive bundles without requiring excessive memory, making the CLI capable of processing edge cases where data cannot fit in memory.
-
----
-
 ## **Specification Reference**
 
 The implementation adheres to the ANS-104 specification:  
-[ANS-104: Bundled Data v2.0](https://github.com/ArweaveTeam/arweave-standards/blob/master/ans/ANS-104.md)
-
----
-
-## **Assumptions and Design Choices**
-
-1. **Entries can fit in memory**:
-   - The tool assumes that while data sizes may be large, the entries themselves can fit in memory. Extending support for larger entries would require saving entries to a database or disk.
-   
-2. **Streaming is sufficient for most cases**:
-   - The tool processes bundles by streaming data. However, for scenarios where there are numerous entries with small data sizes, using range queries might be more efficient.
-
-3. **Third-party Avro parsing library**:
-   - For efficiency and simplicity, a third-party library is used for Avro decoding. While it works well for most cases, special error decoding could be implemented if necessary.
-
-4. **No deep hash validation**:
-   - The tool skips validation of DataItem signatures with deep hashing. This is assumed to be the responsibility of the uploader and end-users when verifying data integrity. The main reason was to avoid the need to sign the huge data size `DataItems`
-
-5. **Error tolerance**:
-   - Non-fatal errors (e.g., invalid entries) are logged, and the corresponding DataItem is skipped. Fatal errors (e.g., corrupt streams) terminate the process.
-
----
-
-## **Performance Goals**
-
-The CLI is designed to be:
-- **Reasonably fast**: Good-enough for most real-world use cases, including large bundles with numerous small items.
-- **Robust in edge cases**: Avoids breaking or panicking, even in edge cases involving large data sizes or deeply nested bundles (within memory constraints).
-
+[ANS-104: Bundled Data v2.0](https://github.com/ArweaveTeam/arweave-standards/blob/master/ans/ANS-104.md
 
 ---
 
@@ -96,8 +51,5 @@ The CLI is designed to be:
 - Add data storage as cache for entries, to support super large number of entries that can not fit the memory
 - To support super large bundles, we would probably need to partition it and feed it to the more robust and large scale indexing cluster.
 - More extenstive edge-case unit testing. For this, I would need more investigation and experience with the protocol, as I suspect lot's of the things could go wrong, and it depends on the usage of the cli what should be supported and handled.
-- Test different buffer sizes
-
-
-
-**Thank you!**
+- Test different buffer sizes if needed (current is 512MB)
+- Improve CLI API
