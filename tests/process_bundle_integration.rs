@@ -4,11 +4,15 @@ use std::fs;
 use std::io::Cursor;
 use std::io::Write;
 use tokio::sync::mpsc;
+mod common;
+use common::create_test_db;
 
 async fn run_process_bundle_test(tx_id: &str, expected_output_path: &str) {
     let generator = Generator::new();
     let uuid = generator.hex128_as_string().unwrap();
     let actual_output_path = format!("tests/samples/actual_output_{}", uuid);
+
+    let (_drop_db, mut db) = create_test_db();
 
     let response_bytes = reqwest::get(format!("https://arweave.net/{}", tx_id))
         .await
@@ -29,7 +33,9 @@ async fn run_process_bundle_test(tx_id: &str, expected_output_path: &str) {
         items
     });
 
-    process_bundle(&mut cursor, tx, tx_id).await.unwrap();
+    process_bundle(&mut cursor, tx, tx_id, &mut db)
+        .await
+        .unwrap();
 
     let items = read_handle.await.unwrap();
 
@@ -87,7 +93,7 @@ async fn test_process_bundle_integration_small() {
 #[tokio::test]
 async fn test_process_bundle_integration_big_nested() {
     let tx_id = "H95gGHbh3dbpCCLAk36sNHCOCgsZ1hy8IG9IEXDNl3o";
-    let expected_output_path = "tests/samples/big";
+    let expected_output_path = "tests/samples/big_nested";
 
     run_process_bundle_test(tx_id, expected_output_path).await;
 }

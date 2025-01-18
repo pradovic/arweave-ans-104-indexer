@@ -1,7 +1,9 @@
+pub mod db;
 mod tags;
 mod utils;
 
 use serde::ser::SerializeStruct;
+use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 
@@ -12,8 +14,6 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
-
-use async_recursion::async_recursion;
 
 use tags::Tag;
 
@@ -310,10 +310,9 @@ fn parse_avro_tags(bytes: &[u8]) -> Result<(Vec<Tag>, bool), String> {
 #[derive(Debug)]
 pub struct Bundle {
     pub item_count: usize,
-    pub entries: Vec<BundleEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BundleEntry {
     pub size: usize,
     pub id: [u8; 32],
@@ -322,22 +321,24 @@ pub struct BundleEntry {
 impl Bundle {
     pub async fn parse_stream<R: AsyncRead + Unpin>(
         stream: &mut R,
+        db: &mut db::DB,
     ) -> Result<Self, StreamParseError> {
         let mut count_buf = [0u8; 32];
         stream
             .read_exact(&mut count_buf)
             .await
             .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
+
         let item_count = utils::bytes_to_number(&count_buf)
             .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
 
-        let mut entries = Vec::with_capacity(item_count as usize);
         for _ in 0..item_count {
             let mut size_buf = [0u8; 32];
             stream
                 .read_exact(&mut size_buf)
                 .await
                 .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
+
             let size = utils::bytes_to_number(&size_buf)
                 .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
 
@@ -347,23 +348,21 @@ impl Bundle {
                 .await
                 .map_err(|e| StreamParseError::FatalError(e.to_string()))?;
 
-            entries.push(BundleEntry { size, id });
+            db.push_last_entry(BundleEntry { size, id })
+                .map_err(StreamParseError::FatalError)?;
         }
 
-        Ok(Bundle {
-            item_count,
-            entries,
-        })
+        Ok(Bundle { item_count })
     }
 }
 
-#[async_recursion]
 pub async fn process_bundle(
     stream: &mut (impl AsyncRead + Unpin + Send),
     tx: mpsc::Sender<DataItem>,
     bundled_in: &str,
+    db: &mut db::DB,
 ) -> Result<(), String> {
-    let bundle = Bundle::parse_stream(stream)
+    let bundle = Bundle::parse_stream(stream, db)
         .await
         .map_err(|e| format!("Parse bundle fatal error: {}", e))?;
 
@@ -373,14 +372,26 @@ pub async fn process_bundle(
         bundled_in
     );
 
-    for entry in bundle.entries {
+    while let Some(entry) = db
+        .pop_first_entry()
+        .map_err(|e| format!("Failed to read entry: {}", e))?
+    {
         match DataItem::parse_stream(stream, bundled_in.to_string(), entry.size).await {
             Ok(data_item) => {
                 if data_item.is_bundle {
                     tx.send(data_item)
                         .await
                         .map_err(|e| format!("Channel send error: {}", e))?;
-                    process_bundle(stream, tx.clone(), &BASE64_URL.encode(entry.id)).await?;
+
+                    let bundle = Bundle::parse_stream(stream, db)
+                        .await
+                        .map_err(|e| format!("Parse bundle fatal error: {}", e))?;
+
+                    tracing::info!(
+                        "Processing bundle with {} entries, bundled in {}",
+                        bundle.item_count,
+                        bundled_in
+                    );
                 } else {
                     tx.send(data_item)
                         .await

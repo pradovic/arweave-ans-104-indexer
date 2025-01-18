@@ -10,6 +10,8 @@ use clap::Parser as ClapParser;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::StreamReader;
 
+use arweave_ans_1040_indexer::db::DB;
+
 #[derive(ClapParser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -17,6 +19,9 @@ struct Args {
 
     #[arg(short, long, default_value = "bundle")]
     output: std::path::PathBuf,
+
+    #[arg(short, long, default_value = "entries")]
+    entries_db: std::path::PathBuf,
 }
 
 #[tokio::main]
@@ -33,6 +38,14 @@ async fn main() {
         Ok(file) => file,
         Err(e) => {
             tracing::error!("Failed to open output file: {}", e);
+            return;
+        }
+    };
+
+    let mut db = match DB::new(args.entries_db.as_path()) {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::error!("Failed to open database: {}", e);
             return;
         }
     };
@@ -64,7 +77,7 @@ async fn main() {
     let stream = StreamReader::new(response_bytes);
     let mut buffered = BufReader::with_capacity(512 * 1024 * 1024, stream);
 
-    match arweave_ans_1040_indexer::process_bundle(&mut buffered, tx, &args.tx_id).await {
+    match arweave_ans_1040_indexer::process_bundle(&mut buffered, tx, &args.tx_id, &mut db).await {
         Ok(_) => tracing::info!("Processing complete"),
         Err(e) => {
             tracing::error!("Processing failed: {}", e);
