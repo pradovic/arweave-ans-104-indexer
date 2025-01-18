@@ -30,19 +30,16 @@ The implementation adheres to the ANS-104 specification:
 ---
 
 ## **Limitations**
-1. **Memory requirements for entries**:
-   - Entries must fit in memory. Supporting larger entries would require disk-based storage or specialized processing.
-
-2. **Deep hash validation**:
+1. **Deep hash validation**:
    - The tool does not perform full DataItem signature validation, leaving it to the data uploader or end-users. This was not to avoid implementing deep hash, but to avoid signing `DataItem`s with huge data
 
-3. **Performance with massive bundles**:
+2. **Performance with massive bundles**:
    - While the tool is optimized for typical use cases, extreme scenarios with vast numbers of entries or extremely large payloads may still present challenges. 
    - The bundles with huge sized data object would need special treatment. Probably using multiple  http range queries in order to avoid reading data part at all.
    - On the other hand the entires with very large number of small entries would benefit more this kind of stream approach
 
-4. **Full spec support**: The spec itself allows for super large number of entries 32byte number, with Nx64 number of entrie pairs. In order to support this efficiently we would probably need a more robust approach, with the cluster of instances.
+3. **Full spec support**: The spec itself allows for super large number of entries 32byte number, with Nx64 number of entrie pairs. In order to support this efficiently we would probably need a more robust approach, with the cluster of instances.
 
-5. **Resumability**: The CLI expects to finish in one go. In order to support resumability, we would need to mark down what was indexed so far. It would probably be helpful to use additional data storage for this.
+4. **Resumability**: The CLI expects to finish in one go. In order to support resumability, we would need to mark down what was indexed so far. It would probably be helpful to use additional data storage for this.
 
 ---
